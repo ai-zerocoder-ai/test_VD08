@@ -2,14 +2,14 @@ import os
 import requests
 from flask import Flask, render_template, request, flash
 from dotenv import load_dotenv
+import math
 import datetime
 import logging
-import json
 
 app = Flask(__name__)
 
 # Настройка логирования
-logging.basicConfig(level=logging.DEBUG)  # Уровень DEBUG для подробного логирования
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Загрузка переменных окружения из .env файла
@@ -30,9 +30,14 @@ API_ENDPOINT = "https://api.elsevier.com/content/search/scopus"
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    quota_info = {}
+    quota_info = {}  # Содержит информацию о квотах
     results = []
-    query = ''
+    query = request.args.get('query', '')  # Получение query из GET параметров
+    total_results = 0
+    items_per_page = 10
+
+    # Получаем текущую страницу из параметров URL (по умолчанию 1)
+    page = int(request.args.get('page', 1))
 
     if request.method == 'POST':
         user_query = request.form.get('query')
@@ -40,126 +45,92 @@ def index():
             flash('Пожалуйста, введите поисковый запрос.')
             return render_template('index.html', quota=quota_info)
 
-        # Формирование запроса с использованием TITLE-ABS-KEY и кавычек
-        formatted_query = f'TITLE-ABS-KEY("{user_query}")'
+        query = user_query
+
+    if query:
+        formatted_query = f'TITLE-ABS-KEY("{query}")'
+
+        start = (page - 1) * items_per_page  # Вычисляем начальный индекс
 
         params = {
-            'query': formatted_query,            # Форматированный запрос
-            'count': 10,                          # Количество результатов
-            'start': 0,                           # Начальная позиция
-            'sort': 'relevancy',                  # Сортировка по релевантности
-            'apiKey': API_KEY,                    # Ваш Scopus API-ключ
-            'field': 'dc:title,prism:doi,prism:publicationName,prism:coverDate,prism:url,dc:creator'  # Необходимые поля
-            # 'view': 'COMPLETE'                 # Удалено для избежания ошибки 401
+            'query': formatted_query,
+            'count': items_per_page,
+            'start': start,
+            'sort': 'relevancy',
+            'apiKey': API_KEY,
+            'field': 'dc:title,prism:doi,prism:publicationName,prism:coverDate,prism:url,dc:creator'
         }
 
-        headers = {
-            'Accept': 'application/json'
-        }
-
-        logger.info(f"Отправка запроса GET на {API_ENDPOINT} с параметрами {params} и заголовками {headers}")
+        headers = {'Accept': 'application/json'}
 
         try:
             response = requests.get(API_ENDPOINT, headers=headers, params=params)
-            logger.info(f"Получен ответ: {response.status_code}")
-            logger.debug(f"Тело ответа: {response.text}")
+            response.raise_for_status()
 
-            # Логирование полной структуры ответа для отладки
-            try:
-                response_data = response.json()
-                logger.debug("Структура ответа API: %s", json.dumps(response_data, ensure_ascii=False, indent=2))
-            except json.JSONDecodeError:
-                logger.error("Не удалось декодировать ответ API как JSON.")
-                response_data = {}
-
-            # Извлечение квот из заголовков
-            rate_limit = response.headers.get('X-RateLimit-Limit')
-            rate_remaining = response.headers.get('X-RateLimit-Remaining')
-            rate_reset = response.headers.get('X-RateLimit-Reset')
-
-            if rate_reset:
-                reset_time = datetime.datetime.fromtimestamp(int(rate_reset))
-                reset_time_str = reset_time.strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                reset_time_str = 'Неизвестно'
-
+            # Обработка квот
             quota_info = {
-                'limit': rate_limit,
-                'remaining': rate_remaining,
-                'reset_time': reset_time_str
+                'limit': response.headers.get('X-RateLimit-Limit', 'Неизвестно'),
+                'remaining': response.headers.get('X-RateLimit-Remaining', 'Неизвестно'),
+                'reset_time': datetime.datetime.fromtimestamp(
+                    int(response.headers.get('X-RateLimit-Reset', '0'))
+                ).strftime('%Y-%m-%d %H:%M:%S') if response.headers.get('X-RateLimit-Reset') else 'Неизвестно'
             }
 
-            response.raise_for_status()
-            data = response_data
+            response_data = response.json()
 
-            # Извлечение результатов
-            for entry in data.get('search-results', {}).get('entry', []):
-                # Извлечение автора из 'dc:creator'
-                creator = entry.get('dc:creator', '').strip()
+            # Общее количество результатов
+            total_results = int(response_data.get('search-results', {}).get('opensearch:totalResults', 0))
 
-                # Логирование извлечённого автора
-                logger.debug(f"Извлечённый автор: '{creator}'")
-
-                if creator:
-                    authors_names = f"Один из авторов: {creator}"
-                else:
-                    authors_names = "Авторы: Неизвестен"
-
-                # Извлечение DOI
-                doi = entry.get('prism:doi', '').strip()
-                if doi:
-                    doi_url = f"https://doi.org/{doi}"
-                else:
-                    doi_url = '#'
-
+            # Извлечение статей
+            for entry in response_data.get('search-results', {}).get('entry', []):
                 article = {
                     'title': entry.get('dc:title', 'Нет названия'),
-                    'doi': doi,
+                    'doi': entry.get('prism:doi', ''),
                     'publication_name': entry.get('prism:publicationName', 'Нет названия журнала'),
                     'cover_date': entry.get('prism:coverDate', 'Нет даты'),
-                    'authors': authors_names,
-                    'url': doi_url  # Используем DOI URL вместо prism:url
+                    'authors': entry.get('dc:creator', 'Неизвестен'),
+                    'url': f"https://doi.org/{entry.get('prism:doi', '')}" if entry.get('prism:doi') else '#'
                 }
                 results.append(article)
 
-            return render_template('index.html', results=results, query=user_query, quota=quota_info)
-
         except requests.exceptions.HTTPError as http_err:
-            logger.error(f"HTTP ошибка: {http_err}")
+            # Обработка ошибок 429
             if response.status_code == 429:
-                flash('Превышен лимит запросов. Пожалуйста, попробуйте позже.')
-            elif response.status_code == 400:
-                flash('Неверный запрос. Проверьте введенные данные.')
-            elif response.status_code == 401:
-                flash('Ошибка аутентификации. Проверьте ваш API ключ.')
-            elif response.status_code == 403:
-                flash('Ошибка авторизации. У вас нет доступа к этому ресурсу.')
+                status = response.headers.get('X-ELS-Status', 'Неизвестно')
+                reset_time = response.headers.get('X-RateLimit-Reset', '0')
+                reset_time_str = datetime.datetime.fromtimestamp(int(reset_time)).strftime('%Y-%m-%d %H:%M:%S') if reset_time.isdigit() else 'Неизвестно'
+
+                quota_info = {
+                    'limit': response.headers.get('X-RateLimit-Limit', 'Неизвестно'),
+                    'remaining': response.headers.get('X-RateLimit-Remaining', 'Неизвестно'),
+                    'reset_time': reset_time_str
+                }
+
+                if status == "QUOTA_EXCEEDED":
+                    flash('Превышен лимит квот API. Попробуйте позже.')
+                else:
+                    flash('Превышено количество запросов. Попробуйте позже.')
+
             else:
-                flash(f'Произошла ошибка: {http_err}')
-            # Извлечение квот даже при ошибке, если они есть
-            rate_limit = response.headers.get('X-RateLimit-Limit')
-            rate_remaining = response.headers.get('X-RateLimit-Remaining')
-            rate_reset = response.headers.get('X-RateLimit-Reset')
+                flash(f"HTTP ошибка: {http_err}")
+                logger.error(f"HTTP ошибка: {http_err}")
 
-            if rate_reset:
-                reset_time = datetime.datetime.fromtimestamp(int(rate_reset))
-                reset_time_str = reset_time.strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                reset_time_str = 'Неизвестно'
+        except requests.exceptions.RequestException as e:
+            flash(f"Ошибка при запросе API: {e}")
+            logger.error(f"Ошибка запроса API: {e}")
 
-            quota_info = {
-                'limit': rate_limit,
-                'remaining': rate_remaining,
-                'reset_time': reset_time_str
-            }
+    # Количество страниц
+    total_pages = math.ceil(total_results / items_per_page)
 
-            return render_template('index.html', quota=quota_info)
-        except Exception as err:
-            logger.error(f"Неожиданная ошибка: {err}")
-            flash(f'Произошла непредвиденная ошибка: {err}')
-            return render_template('index.html', quota=quota_info)
-
-    return render_template('index.html', quota=quota_info)
+    return render_template(
+        'index.html',
+        results=results,
+        query=query,
+        quota=quota_info,
+        page=page,
+        total_pages=total_pages,
+        total_results=total_results
+    )
 
 if __name__ == '__main__':
     app.run(debug=True)
