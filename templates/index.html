@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Поиск по Scopus</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="mb-4">Поиск статей в Scopus</h1>
+
+        {% with messages = get_flashed_messages() %}
+          {% if messages %}
+            <div class="alert alert-warning" role="alert">
+              {% for message in messages %}
+                <p>{{ message }}</p>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+
+        {% if quota.limit %}
+            <div class="alert alert-info" role="alert">
+                <p><strong>Квота API:</strong></p>
+                <ul>
+                    <li>Лимит запросов: {{ quota.limit }}</li>
+                    <li>Оставшиеся запросы: {{ quota.remaining }}</li>
+                    <li>Время сброса квоты: {{ quota.reset_time }}</li>
+                </ul>
+            </div>
+        {% endif %}
+
+        <form method="POST" action="/">
+            <div class="mb-3">
+                <label for="query" class="form-label">Поисковый запрос</label>
+                <input type="text" class="form-control" id="query" name="query" placeholder="Введите ключевые слова" value="{{ request.form.query }}">
+            </div>
+            <button type="submit" class="btn btn-primary">Поиск</button>
+        </form>
+
+        {% if results %}
+            <h2 class="mt-5">Результаты поиска для "{{ query }}"</h2>
+            <ul class="list-group mt-3">
+                {% for article in results %}
+                    <li class="list-group-item">
+                        <h5>{{ article.title }}</h5>
+                        <p><strong>DOI:</strong> {{ article.doi }}</p>
+                        <p><strong>Источник:</strong> {{ article.publication_name }}</p>
+                        <p><strong>Дата публикации:</strong> {{ article.cover_date }}</p>
+                        <p><strong>Авторы:</strong> {{ article.authors }}</p>
+                        {% if article.url and article.url != '#' %}
+                            <a href="{{ article.url }}" target="_blank">Читать статью</a>
+                        {% else %}
+                            <span>Ссылка недоступна</span>
+                        {% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
+        {% endif %}
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
